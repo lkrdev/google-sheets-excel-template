@@ -32,6 +32,11 @@ describe(`${action.constructor.name} unit tests`, () => {
     driveStub = sinon.stub(action as any, "driveClientFromRequest").resolves({
       files: {
         create: driveSpy,
+        get: sinon.spy(async () => {
+          const realTemplatePath = path.resolve(__dirname, "../../../template-example.xlsx")
+          const readStream = fs.createReadStream(realTemplatePath)
+          return { data: readStream }
+        }),
       },
     })
   })
@@ -52,6 +57,7 @@ describe(`${action.constructor.name} unit tests`, () => {
     request.formParams = {
       filename: "Brand Report for {{ _filters.order_items.created_week }}",
       folder: "mock_folder_id",
+      template_file_id: "mock_template_file_id",
     }
     request.scheduledPlan = {
       title: "Real File Scheduled Plan",
@@ -155,6 +161,7 @@ describe(`${action.constructor.name} unit tests`, () => {
     request.formParams = {
       filename: "HTML Report",
       folder: "mock_folder_id",
+      template_file_id: "mock_template_file_id",
     }
     request.scheduledPlan = {
       title: "HTML Test",

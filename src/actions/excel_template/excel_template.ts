@@ -3,7 +3,6 @@ import { GaxiosResponse } from "gaxios"
 import { Credentials, OAuth2Client } from "google-auth-library"
 import { drive_v3, google } from "googleapis"
 import * as oboe from "oboe"
-import * as path from "path"
 import * as https from "request-promise-native"
 import { Readable } from "stream"
 import * as winston from "winston"
@@ -143,10 +142,21 @@ export class ExcelTemplateAction extends Hub.OAuthActionV2 {
         const sanitizedFilename = sanitizeFilename(resolvedFilename)
 
         // 4. Load Excel template
-        const templatePath = path.resolve(__dirname, "../../../template-example.xlsx")
-        winston.info(`${LOG_PREFIX} Reading template from ${templatePath}`, { webhookId: request.webhookId })
+        if (!request.formParams.template_file_id) {
+          throw new Error("No template file selected.")
+        }
+        winston.info(`${LOG_PREFIX} Downloading template from Google Drive (ID: ${request.formParams.template_file_id})`, {
+          webhookId: request.webhookId,
+        })
+        const templateResponse = await drive.files.get(
+          {
+            fileId: request.formParams.template_file_id,
+            alt: "media",
+          },
+          { responseType: "stream" },
+        )
         const workbook = new ExcelJS.Workbook()
-        await workbook.xlsx.readFile(templatePath)
+        await workbook.xlsx.read(templateResponse.data)
 
         // 5. Populate template with data
         winston.info(`${LOG_PREFIX} Populating Excel template`, { webhookId: request.webhookId })
@@ -313,6 +323,7 @@ export class ExcelTemplateAction extends Hub.OAuthActionV2 {
             type: "select",
           })
 
+          let folders: any[] = []
           if (request.formParams.fetchpls) {
             const options: any = {
               fields: "files(id,name,parents),nextPageToken",
@@ -353,7 +364,7 @@ export class ExcelTemplateAction extends Hub.OAuthActionV2 {
               [],
               await drive.files.list(options),
             )
-            const folders = paginatedFiles
+            folders = paginatedFiles
               .filter(
                 (folder) =>
                   !(folder.id === undefined) && !(folder.name === undefined),
@@ -369,6 +380,7 @@ export class ExcelTemplateAction extends Hub.OAuthActionV2 {
               default: folders[0].name,
               required: true,
               type: "select",
+              interactive: true,
             })
           } else {
             form.fields.push({
@@ -378,6 +390,7 @@ export class ExcelTemplateAction extends Hub.OAuthActionV2 {
               name: "folderid",
               type: "string",
               required: false,
+              interactive: true,
             })
             form.fields.push({
               description: "Fetch folders",
@@ -388,6 +401,66 @@ export class ExcelTemplateAction extends Hub.OAuthActionV2 {
               options: [{ label: "Fetch", name: "fetch" }],
             })
           }
+
+          // Determine current folder ID for template loading
+          let templateFolderId: string | undefined
+          if (request.formParams.folder) {
+            templateFolderId = request.formParams.folder
+          } else if (request.formParams.folderid) {
+            if (request.formParams.folderid.includes("my-drive")) {
+              templateFolderId = "root"
+            } else {
+              const match = request.formParams.folderid.match(FOLDERID_REGEX)
+              if (match && match.groups) {
+                templateFolderId = match.groups.folderId
+              } else {
+                templateFolderId = "root"
+              }
+            }
+          } else if (request.formParams.fetchpls) {
+            if (folders && folders.length > 0) {
+              templateFolderId = folders[0].name
+            } else {
+              templateFolderId = "root"
+            }
+          }
+
+          if (templateFolderId) {
+            try {
+              const templates = await this.getTemplatesInFolder(drive, templateFolderId)
+              if (templates.length > 0) {
+                form.fields.push({
+                  description: "Select the Excel (.xlsx) template to populate",
+                  label: "Select Template File",
+                  name: "template_file_id",
+                  options: templates,
+                  default: templates[0].name,
+                  required: true,
+                  type: "select",
+                })
+              } else {
+                form.fields.push({
+                  name: "template_file_error",
+                  type: "message",
+                  value: "⚠️ No .xlsx template files found in the selected folder. Please upload a template first.",
+                })
+              }
+            } catch (e: any) {
+              winston.error(`Failed to fetch templates in folder ${templateFolderId}: ${e.message}`)
+              form.fields.push({
+                name: "template_file_error",
+                type: "message",
+                value: `⚠️ Failed to fetch templates from folder: ${e.message || e}`,
+              })
+            }
+          } else {
+            form.fields.push({
+              name: "template_file_info",
+              type: "message",
+              value: "ℹ️ Paste a Google Drive folder URL or click 'Fetch' to select a folder and load templates.",
+            })
+          }
+
           form.fields.push({
             label: "Enter a filename",
             name: "filename",
@@ -549,6 +622,42 @@ export class ExcelTemplateAction extends Hub.OAuthActionV2 {
     }
 
     return driveList
+  }
+
+  async getTemplatesInFolder(
+    drive: Drive,
+    folderId: string,
+  ): Promise<{ name: string; label: string }[]> {
+    const options: any = {
+      fields: "files(id,name),nextPageToken",
+      orderBy: "name",
+      pageSize: 1000,
+      q: `'${folderId}' in parents and mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' and trashed=false`,
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+    }
+
+    const pagedFileList = async (
+      accumulatedFiles: drive_v3.Schema$File[],
+      response: GaxiosResponse<drive_v3.Schema$FileList>,
+    ): Promise<drive_v3.Schema$File[]> => {
+      const mergedFiles = accumulatedFiles.concat(response.data.files || [])
+
+      if (response.data.nextPageToken) {
+        const pageOptions = { ...options }
+        pageOptions.pageToken = response.data.nextPageToken
+        return pagedFileList(
+          mergedFiles,
+          await drive.files.list(pageOptions),
+        )
+      }
+      return mergedFiles
+    }
+
+    const files = await pagedFileList([], await drive.files.list(options))
+    return files
+      .filter((f) => f.id && f.name && f.name.toLowerCase().endsWith(".xlsx"))
+      .map((f) => ({ name: f.id!, label: f.name! }))
   }
 
   sanitizeGaxiosError(err: any) {
