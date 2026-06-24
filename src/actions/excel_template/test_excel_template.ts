@@ -1,10 +1,10 @@
 import * as chai from "chai"
 import concatStream = require("concat-stream")
+import * as ExcelJS from "exceljs"
 import * as fs from "fs"
 import * as path from "path"
 import * as sinon from "sinon"
 import { Readable } from "stream"
-import * as ExcelJS from "exceljs"
 import * as Hub from "../../hub"
 import { ExcelTemplateAction } from "./excel_template"
 
@@ -100,9 +100,9 @@ describe(`${action.constructor.name} unit tests`, () => {
     // Assert standard cells
     chai.expect(sheet.getCell("B3").value).to.be.a("string") // run_at timestamp
     chai.expect(sheet.getCell("B4").value).to.equal("Real File Scheduled Plan") // title
-    chai.expect(sheet.getCell("B6").value).to.be.oneOf([null, undefined, ""]) // users.state filter (not in query filters, so empty)
-    chai.expect(sheet.getCell("B7").value).to.be.oneOf([null, undefined, ""]) // products.brand has no value (field not in query)
-    chai.expect(sheet.getCell("C8").value).to.be.oneOf([null, undefined, ""]) // users.state label (field not in query)
+    chai.expect(sheet.getCell("B6").value).to.be.oneOf([null, undefined, ""])
+    chai.expect(sheet.getCell("B7").value).to.be.oneOf([null, undefined, ""])
+    chai.expect(sheet.getCell("C8").value).to.be.oneOf([null, undefined, ""])
 
     // Assert repeating rows (should have 183 rows of data)
     // Row 9 is the first row of data
@@ -127,7 +127,7 @@ describe(`${action.constructor.name} unit tests`, () => {
     const errorMessages: string[] = []
     errorsSheet!.eachRow((row) => {
       const cellVal = row.getCell(1).value
-      if (cellVal) {
+      if (cellVal !== undefined && cellVal !== null) {
         errorMessages.push(String(cellVal))
       }
     })

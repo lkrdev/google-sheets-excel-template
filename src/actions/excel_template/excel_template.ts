@@ -1,3 +1,4 @@
+import * as ExcelJS from "exceljs"
 import { GaxiosResponse } from "gaxios"
 import { Credentials, OAuth2Client } from "google-auth-library"
 import { drive_v3, google } from "googleapis"
@@ -7,7 +8,6 @@ import * as https from "request-promise-native"
 import { Readable } from "stream"
 import * as winston from "winston"
 import Drive = drive_v3.Drive
-import * as ExcelJS from "exceljs"
 import { getHttpErrorType } from "../../error_types/utils"
 import * as Hub from "../../hub"
 import { Error, errorWith } from "../../hub/action_response"
@@ -789,31 +789,15 @@ export class ExcelTemplateAction extends Hub.OAuthActionV2 {
 
   // ponytail: logo is programmatically placed at D1 with hardcoded dimensions to preserve template visuals
   private populateTemplate(workbook: ExcelJS.Workbook, context: any, errors: Set<string>) {
-    const worksheet = workbook.worksheets[0]
-    if (!worksheet) { return }
-
-    // Add logo image if it exists
-    const logoPath = path.resolve(__dirname, "../../../assets/logo.png")
-    try {
-      const logoImageId = workbook.addImage({
-        filename: logoPath,
-        extension: "png",
-      })
-      worksheet.addImage(logoImageId, {
-        tl: { col: 3.1, row: 0.1 },
-        ext: { width: 202, height: 60 },
-      })
-      winston.info(`${LOG_PREFIX} Successfully added logo to worksheet`, { webhookId: context.webhookId })
-    } catch (imageErr) {
-      winston.error(`${LOG_PREFIX} Failed to add logo image: ${imageErr}`, { webhookId: context.webhookId })
-    }
+    const worksheet = workbook.worksheets[0] as ExcelJS.Worksheet | undefined
+    if (worksheet === undefined) { return }
 
     const repeatingRowIdx = this.findRepeatingRow(worksheet)
     let numNewRows = 0
 
     if (repeatingRowIdx !== null) {
       const templateRow = worksheet.getRow(repeatingRowIdx)
-      
+
       // 1. Extract cell templates (value and style) for this row
       const cellTemplates: { [col: number]: { value: any; style: any; height: number } } = {}
       templateRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
@@ -855,7 +839,7 @@ export class ExcelTemplateAction extends Hub.OAuthActionV2 {
             targetCell.value = valCopy
             targetCell.style = tpl.style
           }
-          if (templateRow.height) {
+          if (templateRow.height > 0) {
             targetRow.height = templateRow.height
           }
           targetRow.commit()
@@ -878,11 +862,11 @@ export class ExcelTemplateAction extends Hub.OAuthActionV2 {
   private findRepeatingRow(worksheet: ExcelJS.Worksheet): number | null {
     let repeatingRowNumber: number | null = null
     worksheet.eachRow((row, rowNumber) => {
-      if (repeatingRowNumber !== null) return
+      if (repeatingRowNumber !== null) { return }
       row.eachCell((cell) => {
-        if (repeatingRowNumber !== null) return
+        if (repeatingRowNumber !== null) { return }
         const val = cell.value
-        if (val && typeof val === "string") {
+        if (val !== undefined && val !== null && typeof val === "string") {
           if (val.includes("{{ data.") && !val.includes("{{ data[")) {
             repeatingRowNumber = rowNumber
           }
