@@ -31,8 +31,8 @@ if ! command -v cloudflared &> /dev/null; then
     fi
 fi
 
-# Determine the port to tunnel (default to 3000 if not provided)
-PORT=${1:-3000}
+# Determine the port to tunnel (default to 8080 if not provided)
+PORT=${1:-8080}
 echo "Starting Cloudflare tunnel to http://localhost:$PORT..."
 
 # Create a temporary file to capture logs so we can extract the URL
@@ -55,7 +55,7 @@ TUNNEL_PID=$!
 # Poll the log file to extract the trycloudflare.com URL
 URL=""
 for i in {1..30}; do
-    if grep -q "trycloudflare.com" "$LOG_FILE"; then
+    if grep -q "https://[a-zA-Z0-9-]\+\.trycloudflare\.com" "$LOG_FILE"; then
         # Extract only the URL from the log output
         URL=$(grep -o "https://[a-zA-Z0-9-]\+\.trycloudflare\.com" "$LOG_FILE" | head -n 1)
         break

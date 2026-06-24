@@ -64,3 +64,4 @@ terraform.rc
 
 lib
 tmp
+cloudflared
