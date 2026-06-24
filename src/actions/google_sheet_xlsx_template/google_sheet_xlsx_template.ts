@@ -3,7 +3,6 @@ import { GaxiosResponse } from "gaxios"
 import { Credentials, OAuth2Client } from "google-auth-library"
 import { drive_v3, google } from "googleapis"
 import * as oboe from "oboe"
-import * as https from "request-promise-native"
 import { Readable } from "stream"
 import * as winston from "winston"
 import Drive = drive_v3.Drive
@@ -145,9 +144,10 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
         if (!request.formParams.template_file_id) {
           throw new Error("No template file selected.")
         }
-        winston.info(`${LOG_PREFIX} Downloading template from Google Drive (ID: ${request.formParams.template_file_id})`, {
-          webhookId: request.webhookId,
-        })
+        winston.info(
+          `${LOG_PREFIX} Downloading template from Google Drive (ID: ${request.formParams.template_file_id})`,
+          { webhookId: request.webhookId },
+        )
         const templateResponse = await drive.files.get(
           {
             fileId: request.formParams.template_file_id,
@@ -344,26 +344,7 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
               options.corpora = "user"
             }
 
-            const pagedFileList = async (
-              accumulatedFiles: drive_v3.Schema$File[],
-              response: GaxiosResponse<drive_v3.Schema$FileList>,
-            ): Promise<drive_v3.Schema$File[]> => {
-              const mergedFiles = accumulatedFiles.concat(response.data.files!)
-
-              if (response.data.nextPageToken) {
-                const pageOptions = { ...options }
-                pageOptions.pageToken = response.data.nextPageToken
-                return pagedFileList(
-                  mergedFiles,
-                  await drive.files.list(pageOptions),
-                )
-              }
-              return mergedFiles
-            }
-            const paginatedFiles = await pagedFileList(
-              [],
-              await drive.files.list(options),
-            )
+            const paginatedFiles = await this.listAllFiles(drive, options)
             folders = paginatedFiles
               .filter(
                 (folder) =>
@@ -418,7 +399,7 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
               }
             }
           } else if (request.formParams.fetchpls) {
-            if (folders && folders.length > 0) {
+            if (folders.length > 0) {
               templateFolderId = folders[0].name
             } else {
               templateFolderId = "root"
@@ -637,44 +618,22 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
       includeItemsFromAllDrives: true,
     }
 
-    const pagedFileList = async (
-      accumulatedFiles: drive_v3.Schema$File[],
-      response: GaxiosResponse<drive_v3.Schema$FileList>,
-    ): Promise<drive_v3.Schema$File[]> => {
-      const mergedFiles = accumulatedFiles.concat(response.data.files || [])
-
-      if (response.data.nextPageToken) {
-        const pageOptions = { ...options }
-        pageOptions.pageToken = response.data.nextPageToken
-        return pagedFileList(
-          mergedFiles,
-          await drive.files.list(pageOptions),
-        )
-      }
-      return mergedFiles
-    }
-
-    const files = await pagedFileList([], await drive.files.list(options))
+    const files = await this.listAllFiles(drive, options)
     return files
       .filter((f) => f.id && f.name && f.name.toLowerCase().endsWith(".xlsx"))
       .map((f) => ({ name: f.id!, label: f.name! }))
   }
 
   sanitizeGaxiosError(err: any) {
-    const configObjs = []
-    if (err.config) {
-      configObjs.push(err.config)
-    }
-    if (err.response && err.response.config) {
-      configObjs.push(err.response.config)
-    }
-    for (const config of configObjs) {
-      for (const prop of ["data", "body"]) {
-        if (config[prop]) {
-          config[prop] = "[REDACTED]"
-        }
+    [err?.config, err?.response?.config].forEach((config) => {
+      if (config) {
+        ["data", "body"].forEach((prop) => {
+          if (config[prop]) {
+            config[prop] = "[REDACTED]"
+          }
+        })
       }
-    }
+    })
   }
 
   protected async getAccessTokenCredentialsFromCode(
@@ -862,14 +821,17 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
         new Hub.ActionCrypto(),
         requestWebhookId,
       )
-      await https
-        .post({
-          url: statePayload.stateurl!,
-          body: JSON.stringify(encryptedPayload),
-        })
-        .catch((_err) => {
-          winston.error(_err.toString())
-        })
+      await fetch(statePayload.stateurl!, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(encryptedPayload),
+      }).then((res) => {
+        if (!res.ok) {
+          throw new Error("HTTP error! status: " + res.status)
+        }
+      }).catch((_err) => {
+        winston.error(String(_err))
+      })
     }
   }
 
@@ -895,6 +857,22 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
   }
 
   // --- Spreadsheet Population Engine (ExcelJS) ---
+
+  private async listAllFiles(
+    drive: Drive,
+    options: any,
+  ): Promise<drive_v3.Schema$File[]> {
+    let files: drive_v3.Schema$File[] = []
+    let pageToken: string | undefined = typeof options.pageToken === "string" ? options.pageToken : undefined
+    do {
+      const res = await drive.files.list({ ...options, pageToken })
+      if (res.data.files) {
+        files = files.concat(res.data.files)
+      }
+      pageToken = res.data.nextPageToken ? res.data.nextPageToken : undefined
+    } while (pageToken)
+    return files
+  }
 
   // ponytail: logo is programmatically placed at D1 with hardcoded dimensions to preserve template visuals
   private populateTemplate(workbook: ExcelJS.Workbook, context: any, errors: Set<string>) {
