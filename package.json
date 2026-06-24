@@ -69,7 +69,7 @@
   },
   "typings": "lib/index",
   "engines": {
-    "node": ">=20.16.0",
+    "node": ">=20.19.0",
     "yarn": ">=1.19.1"
   },
   "packageManager": "yarn@1.19.1",
