@@ -4,7 +4,7 @@ import * as fs from "fs"
 import * as path from "path"
 import * as sinon from "sinon"
 import { Readable } from "stream"
-import * as XLSX from "xlsx"
+import * as ExcelJS from "exceljs"
 import * as Hub from "../../hub"
 import { ExcelTemplateAction } from "./excel_template"
 
@@ -84,42 +84,54 @@ describe(`${action.constructor.name} unit tests`, () => {
 
     // 3. Verify Excel workbook contents
     chai.expect(uploadedBuffer).to.not.be.null
-    const workbook = XLSX.read(uploadedBuffer!, { type: "buffer" })
-    const sheetName = workbook.SheetNames[0]
-    const sheet = workbook.Sheets[sheetName]
+    const workbook = new ExcelJS.Workbook()
+    await workbook.xlsx.load(uploadedBuffer! as any)
+    const sheet = workbook.worksheets[0]
     chai.expect(sheet).to.exist
 
+    // Verify logo image was programmatically added
+    const images = sheet.getImages()
+    chai.expect(images).to.have.lengthOf(1)
+    const img = images[0]
+    chai.expect(img.imageId).to.exist
+    chai.expect(Math.floor(img.range.tl.col)).to.equal(3) // Column D (0-indexed)
+    chai.expect(Math.floor(img.range.tl.row)).to.equal(0) // Row 1 (0-indexed)
+
     // Assert standard cells
-    chai.expect(sheet.B3?.v).to.be.a("string") // run_at timestamp
-    chai.expect(sheet.B4?.v).to.equal("Real File Scheduled Plan") // title
-    chai.expect(sheet.B6?.v).to.equal("") // users.state filter (not in query filters, so empty)
-    chai.expect(sheet.B7?.v).to.equal("") // products.brand has no value (field not in query)
-    chai.expect(sheet.C8?.v).to.equal("") // users.state label (field not in query)
+    chai.expect(sheet.getCell("B3").value).to.be.a("string") // run_at timestamp
+    chai.expect(sheet.getCell("B4").value).to.equal("Real File Scheduled Plan") // title
+    chai.expect(sheet.getCell("B6").value).to.be.oneOf([null, undefined, ""]) // users.state filter (not in query filters, so empty)
+    chai.expect(sheet.getCell("B7").value).to.be.oneOf([null, undefined, ""]) // products.brand has no value (field not in query)
+    chai.expect(sheet.getCell("C8").value).to.be.oneOf([null, undefined, ""]) // users.state label (field not in query)
 
     // Assert repeating rows (should have 183 rows of data)
     // Row 9 is the first row of data
-    chai.expect(sheet.A9?.v).to.equal("2022-12-26") // order_items.created_week
-    chai.expect(sheet.B9?.v).to.equal("") // columns[2] (out of bounds)
-    chai.expect(sheet.C9?.v).to.equal("") // data.users.state (not in query)
-    chai.expect(sheet.D9?.v).to.equal("") // data.order_items.count (not in query)
+    chai.expect(sheet.getCell("A9").value).to.equal("2022-12-26") // order_items.created_week
+    chai.expect(sheet.getCell("B9").value).to.be.oneOf([null, undefined, ""]) // columns[2] (out of bounds)
+    chai.expect(sheet.getCell("C9").value).to.be.oneOf([null, undefined, ""]) // data.users.state (not in query)
+    chai.expect(sheet.getCell("D9").value).to.be.oneOf([null, undefined, ""]) // data.order_items.count (not in query)
 
     // Assert the last row of data (row 191)
     // index 182 in the payload is the 183rd row
-    chai.expect(sheet.A191?.v).to.equal("2026-06-22")
+    chai.expect(sheet.getCell("A191").value).to.equal("2026-06-22")
 
     // Assert footer rows shifted down by 182 rows
     // Original template: "Footer" was at row 12, "Bryan is Kewl" was at row 13
     // Shifted: "Footer" is at row 194, "Bryan is Kewl" is at row 195
-    chai.expect(sheet.A194?.v).to.equal("Footer")
-    chai.expect(sheet.A195?.v).to.equal("Bryan is Kewl")
+    chai.expect(sheet.getCell("A194").value).to.equal("Footer")
+    chai.expect(sheet.getCell("A195").value).to.equal("Bryan is Kewl")
 
     // Assert that the _errors sheet exists and contains the expected unresolved mustaches
-    const errorsSheetName = workbook.SheetNames.find((name) => name === "_errors")
-    chai.expect(errorsSheetName).to.exist
-    const errorsSheet = workbook.Sheets[errorsSheetName!]
-    const errorsData: any[][] = XLSX.utils.sheet_to_json(errorsSheet, { header: 1 })
+    const errorsSheet = workbook.getWorksheet("_errors")
+    chai.expect(errorsSheet).to.exist
+    const errorMessages: string[] = []
+    errorsSheet!.eachRow((row) => {
+      const cellVal = row.getCell(1).value
+      if (cellVal) {
+        errorMessages.push(String(cellVal))
+      }
+    })
 
-    const errorMessages = errorsData.map((row) => row[0])
     chai.expect(errorMessages).to.have.lengthOf(6)
     chai.expect(errorMessages).to.include("Could not find {{ data._columns[2] }}")
     chai.expect(errorMessages).to.include("Could not find {{ data.users.state }}")
@@ -179,15 +191,15 @@ describe(`${action.constructor.name} unit tests`, () => {
     chai.expect(response.success).to.be.true
 
     chai.expect(uploadedBuffer).to.not.be.null
-    const workbook = XLSX.read(uploadedBuffer!, { type: "buffer" })
-    const sheetName = workbook.SheetNames[0]
-    const sheet = workbook.Sheets[sheetName]
+    const workbook = new ExcelJS.Workbook()
+    await workbook.xlsx.load(uploadedBuffer! as any)
+    const sheet = workbook.worksheets[0]
     chai.expect(sheet).to.exist
 
     // Assert repeating rows (should have 1 row of data starting at row 9)
-    chai.expect(sheet.A9?.v).to.equal("2026-06-24") // html stripped
-    chai.expect(sheet.C9?.v).to.equal("California") // html stripped
-    chai.expect(sheet.D9?.v).to.equal(4214) // html stripped and parsed as number
-    chai.expect(sheet.D9?.t).to.equal("n") // verify type is number
+    chai.expect(sheet.getCell("A9").value).to.equal("2026-06-24") // html stripped
+    chai.expect(sheet.getCell("C9").value).to.equal("California") // html stripped
+    chai.expect(sheet.getCell("D9").value).to.equal(4214) // html stripped and parsed as number
+    chai.expect(typeof sheet.getCell("D9").value).to.equal("number") // verify type is number
   })
 })

@@ -7,7 +7,7 @@ import * as https from "request-promise-native"
 import { Readable } from "stream"
 import * as winston from "winston"
 import Drive = drive_v3.Drive
-import * as XLSX from "xlsx"
+import * as ExcelJS from "exceljs"
 import { getHttpErrorType } from "../../error_types/utils"
 import * as Hub from "../../hub"
 import { Error, errorWith } from "../../hub/action_response"
@@ -145,7 +145,8 @@ export class ExcelTemplateAction extends Hub.OAuthActionV2 {
         // 4. Load Excel template
         const templatePath = path.resolve(__dirname, "../../../template-example.xlsx")
         winston.info(`${LOG_PREFIX} Reading template from ${templatePath}`, { webhookId: request.webhookId })
-        const workbook = XLSX.readFile(templatePath)
+        const workbook = new ExcelJS.Workbook()
+        await workbook.xlsx.readFile(templatePath)
 
         // 5. Populate template with data
         winston.info(`${LOG_PREFIX} Populating Excel template`, { webhookId: request.webhookId })
@@ -156,13 +157,14 @@ export class ExcelTemplateAction extends Hub.OAuthActionV2 {
             `${LOG_PREFIX} Creating _errors sheet with ${errors.size} errors`,
             { webhookId: request.webhookId },
           )
-          const errorRows = Array.from(errors).map((err) => [`Could not find ${err}`])
-          const errorsSheet = XLSX.utils.aoa_to_sheet(errorRows)
-          XLSX.utils.book_append_sheet(workbook, errorsSheet, "_errors")
+          const errorsSheet = workbook.addWorksheet("_errors")
+          Array.from(errors).forEach((err) => {
+            errorsSheet.addRow([`Could not find ${err}`])
+          })
         }
 
         // 6. Write to Buffer
-        const outputBuffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" })
+        const outputBuffer = await workbook.xlsx.writeBuffer()
 
         // 7. Determine destination folder
         let folder: string | undefined
@@ -196,7 +198,7 @@ export class ExcelTemplateAction extends Hub.OAuthActionV2 {
           requestBody: fileMetadata,
           media: {
             mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            body: Readable.from(outputBuffer),
+            body: Readable.from([outputBuffer]),
           },
           fields: "id",
         }
@@ -783,137 +785,152 @@ export class ExcelTemplateAction extends Hub.OAuthActionV2 {
     return `${statePayload.tokenurl!}?state=${ciphertextBlob}`
   }
 
-  // --- Spreadsheet Population Engine (SheetJS) ---
+  // --- Spreadsheet Population Engine (ExcelJS) ---
 
-  private populateTemplate(workbook: XLSX.WorkBook, context: any, errors: Set<string>) {
-    const sheetName = workbook.SheetNames[0]
-    const sheet = workbook.Sheets[sheetName] as XLSX.WorkSheet | undefined
-    if (!sheet) { return }
+  // ponytail: logo is programmatically placed at D1 with hardcoded dimensions to preserve template visuals
+  private populateTemplate(workbook: ExcelJS.Workbook, context: any, errors: Set<string>) {
+    const worksheet = workbook.worksheets[0]
+    if (!worksheet) { return }
 
-    const repeatingRowIdx = this.findRepeatingRow(sheet)
+    // Add logo image if it exists
+    const logoPath = path.resolve(__dirname, "../../../assets/logo.png")
+    try {
+      const logoImageId = workbook.addImage({
+        filename: logoPath,
+        extension: "png",
+      })
+      worksheet.addImage(logoImageId, {
+        tl: { col: 3.1, row: 0.1 },
+        ext: { width: 202, height: 60 },
+      })
+      winston.info(`${LOG_PREFIX} Successfully added logo to worksheet`, { webhookId: context.webhookId })
+    } catch (imageErr) {
+      winston.error(`${LOG_PREFIX} Failed to add logo image: ${imageErr}`, { webhookId: context.webhookId })
+    }
+
+    const repeatingRowIdx = this.findRepeatingRow(worksheet)
+    let numNewRows = 0
+
     if (repeatingRowIdx !== null) {
-      // 1. Extract cell templates for this row
-      const cellTemplates: { [col: number]: XLSX.CellObject } = {}
-      const ref = sheet["!ref"]
-      const range = XLSX.utils.decode_range(ref ? ref : "A1:A1")
-      for (let c = range.s.c; c <= range.e.c; ++c) {
-        const cellAddress = XLSX.utils.encode_cell({ r: repeatingRowIdx, c })
-        const cell = sheet[cellAddress]
-        if (cell) {
-          cellTemplates[c] = { ...cell }
+      const templateRow = worksheet.getRow(repeatingRowIdx)
+      
+      // 1. Extract cell templates (value and style) for this row
+      const cellTemplates: { [col: number]: { value: any; style: any; height: number } } = {}
+      templateRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+        cellTemplates[colNumber] = {
+          value: cell.value,
+          style: cell.style,
+          height: templateRow.height,
         }
-      }
+      })
 
-      // 2. Remove the template cells
-      for (let c = range.s.c; c <= range.e.c; ++c) {
-        const cellAddress = XLSX.utils.encode_cell({ r: repeatingRowIdx, c })
-        delete sheet[cellAddress]
-      }
+      numNewRows = context.data.length
 
-      // 3. Shift the rows below down
-      const numNewRows = context.data.length
+      // 2. Shift the rows below and insert new rows if needed
       if (numNewRows > 1) {
-        this.shiftRows(sheet, repeatingRowIdx + 1, numNewRows - 1)
+        // Shift rows starting at repeatingRowIdx + 1 down by numNewRows - 1
+        worksheet.spliceRows(repeatingRowIdx + 1, 0, ...Array.from({ length: numNewRows - 1 }, () => []))
       } else if (numNewRows === 0) {
-        this.shiftRows(sheet, repeatingRowIdx + 1, -1)
+        // Delete the template row and shift rows up
+        worksheet.spliceRows(repeatingRowIdx, 1)
       }
 
-      // 4. Populate rows with dynamic data
-      for (let i = 0; i < numNewRows; ++i) {
-        const targetRowIdx = repeatingRowIdx + i
-        const rowData = context.data[i]
-        for (const [colStr, cellTpl] of Object.entries(cellTemplates)) {
-          const c = parseInt(colStr, 10)
-          const newCell = { ...cellTpl }
-          this.resolveCell(newCell, context, rowData, errors)
-          const cellAddress = XLSX.utils.encode_cell({ r: targetRowIdx, c })
-          sheet[cellAddress] = newCell
+      // 3. Populate rows with dynamic data
+      if (numNewRows > 0) {
+        for (let i = 0; i < numNewRows; ++i) {
+          const targetRowIdx = repeatingRowIdx + i
+          const targetRow = worksheet.getRow(targetRowIdx)
+          const rowData = context.data[i]
+
+          for (const [colStr, tpl] of Object.entries(cellTemplates)) {
+            const colNumber = parseInt(colStr, 10)
+            const targetCell = targetRow.getCell(colNumber)
+
+            // Deep clone/copy the template value to avoid sharing references
+            let valCopy = typeof tpl.value === "object" && tpl.value !== null
+              ? JSON.parse(JSON.stringify(tpl.value))
+              : tpl.value
+
+            valCopy = this.resolveCellValue(valCopy, context, rowData, errors)
+            targetCell.value = valCopy
+            targetCell.style = tpl.style
+          }
+          if (templateRow.height) {
+            targetRow.height = templateRow.height
+          }
+          targetRow.commit()
         }
       }
     }
 
-    // 5. Resolve all other non-repeating cells in place
-    for (const key of Object.keys(sheet)) {
-      if (key.startsWith("!")) { continue }
-      this.resolveCell(sheet[key], context, undefined, errors)
-    }
+    // 4. Resolve all other non-repeating cells in place
+    worksheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
+      // Skip the repeating rows we just populated
+      if (repeatingRowIdx !== null && rowNumber >= repeatingRowIdx && rowNumber < repeatingRowIdx + numNewRows) {
+        return
+      }
+      row.eachCell({ includeEmpty: true }, (cell) => {
+        cell.value = this.resolveCellValue(cell.value, context, undefined, errors)
+      })
+    })
   }
 
-  private findRepeatingRow(sheet: XLSX.WorkSheet): number | null {
-    const ref = sheet["!ref"]
-    const range = XLSX.utils.decode_range(ref ? ref : "A1:A1")
-    for (let r = range.s.r; r <= range.e.r; ++r) {
-      for (let c = range.s.c; c <= range.e.c; ++c) {
-        const cellAddress = XLSX.utils.encode_cell({ r, c })
-        const cell = sheet[cellAddress]
-        if (cell && cell.v) {
-          const str = String(cell.v)
-          if (str.includes("{{ data.") && !str.includes("{{ data[")) {
-            return r
+  private findRepeatingRow(worksheet: ExcelJS.Worksheet): number | null {
+    let repeatingRowNumber: number | null = null
+    worksheet.eachRow((row, rowNumber) => {
+      if (repeatingRowNumber !== null) return
+      row.eachCell((cell) => {
+        if (repeatingRowNumber !== null) return
+        const val = cell.value
+        if (val && typeof val === "string") {
+          if (val.includes("{{ data.") && !val.includes("{{ data[")) {
+            repeatingRowNumber = rowNumber
           }
         }
-      }
-    }
-    return null
+      })
+    })
+    return repeatingRowNumber
   }
 
-  private shiftRows(sheet: XLSX.WorkSheet, startRow: number, numRows: number) {
-    const ref = sheet["!ref"]
-    const range = XLSX.utils.decode_range(ref ? ref : "A1:A1")
-    const newSheet: any = {
-      "!ref": sheet["!ref"],
-      "!margins": sheet["!margins"],
-      "!merges": sheet["!merges"],
+  private resolveCellValue(val: any, context: any, rowData?: any, errors?: Set<string>): any {
+    if (val === undefined || val === null) {
+      return val
     }
 
-    for (const key of Object.keys(sheet)) {
-      if (key.startsWith("!")) { continue }
-      const cell = XLSX.utils.decode_cell(key)
-      if (cell.r >= startRow) {
-        const newAddress = XLSX.utils.encode_cell({ r: cell.r + numRows, c: cell.c })
-        newSheet[newAddress] = sheet[key]
-      } else {
-        newSheet[key] = sheet[key]
-      }
-    }
+    if (typeof val === "string") {
+      const match = val.match(/^\{\{([^}]+)\}\}$/)
+      if (match) {
+        const expr = match[1]
+        const resolved = this.evaluateExpression(expr, context, rowData, errors)
 
-    for (const key of Object.keys(sheet)) {
-      if (!key.startsWith("!")) { delete sheet[key] }
-    }
-    Object.assign(sheet, newSheet)
-
-    range.e.r += numRows
-    sheet["!ref"] = XLSX.utils.encode_range(range)
-  }
-
-  private resolveCell(cell: XLSX.CellObject | undefined, context: any, rowData?: any, errors?: Set<string>) {
-    if (!cell || cell.v === undefined) { return }
-    const strVal = String(cell.v)
-
-    const match = strVal.match(/^\{\{([^}]+)\}\}$/)
-    if (match) {
-      const expr = match[1]
-      const resolved = this.evaluateExpression(expr, context, rowData, errors)
-
-      let numVal = Number(resolved)
-      if (isNaN(numVal)) {
-        if (/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(resolved)) {
-          const cleanNumStr = resolved.replace(/,/g, "")
-          numVal = Number(cleanNumStr)
+        let numVal = Number(resolved)
+        if (isNaN(numVal)) {
+          if (/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(resolved)) {
+            const cleanNumStr = resolved.replace(/,/g, "")
+            numVal = Number(cleanNumStr)
+          }
         }
-      }
 
-      if (resolved !== "" && !isNaN(numVal)) {
-        cell.t = "n"
-        cell.v = numVal
-      } else {
-        cell.t = "s"
-        cell.v = resolved
+        if (resolved !== "" && !isNaN(numVal)) {
+          return numVal
+        } else {
+          return resolved
+        }
+      } else if (val.includes("{{")) {
+        return this.resolveString(val, context, rowData, errors)
       }
-    } else if (strVal.includes("{{")) {
-      cell.t = "s"
-      cell.v = this.resolveString(strVal, context, rowData, errors)
+      return val
     }
+
+    if (typeof val === "object" && val !== null && "formula" in val) {
+      const formulaStr = String(val.formula)
+      if (formulaStr.includes("{{")) {
+        val.formula = this.resolveString(formulaStr, context, rowData, errors)
+      }
+      return val
+    }
+
+    return val
   }
 
   private resolveString(str: string, context: any, rowData?: any, errors?: Set<string>): string {
