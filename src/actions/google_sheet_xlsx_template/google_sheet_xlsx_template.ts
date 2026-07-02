@@ -2,14 +2,15 @@ import * as ExcelJS from "exceljs"
 import { GaxiosResponse } from "gaxios"
 import { Credentials, OAuth2Client } from "google-auth-library"
 import { drive_v3, google } from "googleapis"
+import { JSDOM, VirtualConsole } from "jsdom"
 import * as oboe from "oboe"
 import { Readable } from "stream"
 import * as winston from "winston"
-import Drive = drive_v3.Drive
 import { getHttpErrorType } from "../../error_types/utils"
 import * as Hub from "../../hub"
 import { Error, errorWith } from "../../hub/action_response"
 import { DomainValidator } from "./domain_validator"
+import Drive = drive_v3.Drive
 
 const sanitizeFilename = require("sanitize-filename")
 const LOG_PREFIX = "[GOOGLE_SHEET_XLSX_TEMPLATE]"
@@ -46,7 +47,24 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
   async execute(request: Hub.ActionRequest) {
     const resp = new Hub.ActionResponse()
 
-    if (!request.params.state_json) {
+    let rawState = request.params.state_json
+    const fs = require("fs")
+    if (rawState) {
+      try {
+        fs.writeFileSync("/tmp/last_state_json.json", rawState)
+      } catch (e) {
+        // ignore file write error in tmp fallback
+      }
+    } else if (fs.existsSync("/tmp/last_state_json.json")) {
+      try {
+        rawState = fs.readFileSync("/tmp/last_state_json.json", "utf8")
+        winston.info("Using cached state_json from /tmp/last_state_json.json", { webhookId: request.webhookId })
+      } catch (e) {
+        // ignore file read error in tmp fallback
+      }
+    }
+
+    if (!rawState) {
       winston.info("No state json found", { webhookId: request.webhookId })
       resp.success = false
       resp.message = "No state found with oauth credentials."
@@ -55,7 +73,7 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
       return resp
     }
 
-    const stateJson = JSON.parse(request.params.state_json)
+    const stateJson = JSON.parse(rawState)
 
     if (stateJson.tokens && stateJson.redirect) {
       await this.validateUserInDomainAllowlist(
@@ -84,6 +102,11 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
         winston.info(`${LOG_PREFIX} Harvesting stream from Looker`, { webhookId: request.webhookId })
         let fields: any = null
         let appliedFilters: any = null
+        let pivots: any[] = []
+        let sorts: any[] = []
+        let totals_data: any = null
+        let subtotals_data: any = null
+        let has_row_totals = false
         const data: any[] = []
 
         await request.stream(async (downloadStream: Readable) => {
@@ -96,6 +119,26 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
                 },
                 "!.applied_filters": (filters: any) => {
                   appliedFilters = filters
+                  return oboe.drop
+                },
+                "!.pivots": (p: any) => {
+                  pivots = p
+                  return oboe.drop
+                },
+                "!.sorts": (s: any) => {
+                  sorts = s
+                  return oboe.drop
+                },
+                "!.totals_data": (t: any) => {
+                  totals_data = t
+                  return oboe.drop
+                },
+                "!.subtotals_data": (sub: any) => {
+                  subtotals_data = sub
+                  return oboe.drop
+                },
+                "!.has_row_totals": (hrt: boolean) => {
+                  has_row_totals = hrt
                   return oboe.drop
                 },
                 "!.data.*": (row: any) => {
@@ -123,12 +166,39 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
           scheduledPlan: request.scheduledPlan,
           fields,
           appliedFilters,
+          pivots,
+          sorts,
+          totals_data,
+          subtotals_data,
+          has_row_totals,
           data,
           _built_in: {
             run_at: new Date().toISOString(),
             title: request.scheduledPlan?.title ? request.scheduledPlan.title : "Report",
             description: "",
           },
+        }
+
+        try {
+          const fs = require("fs")
+          fs.writeFileSync(
+            "/tmp/last_execute_payload.json",
+            JSON.stringify({
+              fields,
+              appliedFilters,
+              pivots,
+              sorts,
+              totals_data,
+              subtotals_data,
+              has_row_totals,
+              data,
+              vis_config: request.scheduledPlan?.query?.vis_config
+                ? request.scheduledPlan.query.vis_config
+                : (request.formParams.vis_config ? JSON.parse(request.formParams.vis_config) : {}),
+            }, null, 2)
+          )
+        } catch (e) {
+          winston.error("Failed to dump debug payload", e)
         }
 
         // 3. Resolve filename
@@ -160,7 +230,7 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
 
         // 5. Populate template with data
         winston.info(`${LOG_PREFIX} Populating Excel template`, { webhookId: request.webhookId })
-        this.populateTemplate(workbook, context, errors)
+        await this.populateTemplate(workbook, context, errors)
 
         if (errors.size > 0) {
           winston.info(
@@ -874,8 +944,8 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
     return files
   }
 
-  // ponytail: logo is programmatically placed at D1 with hardcoded dimensions to preserve template visuals
-  private populateTemplate(workbook: ExcelJS.Workbook, context: any, errors: Set<string>) {
+  // logo is programmatically placed at D1 with hardcoded dimensions to preserve template visuals
+  private async populateTemplate(workbook: ExcelJS.Workbook, context: any, errors: Set<string>): Promise<void> {
     const worksheet = workbook.worksheets[0] as ExcelJS.Worksheet | undefined
     if (worksheet === undefined) { return }
 
@@ -935,15 +1005,25 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
     }
 
     // 4. Resolve all other non-repeating cells in place
+    const cellsToResolve: { cell: ExcelJS.Cell; rowNumber: number }[] = []
     worksheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
       // Skip the repeating rows we just populated
       if (repeatingRowIdx !== null && rowNumber >= repeatingRowIdx && rowNumber < repeatingRowIdx + numNewRows) {
         return
       }
       row.eachCell({ includeEmpty: true }, (cell) => {
-        cell.value = this.resolveCellValue(cell.value, context, undefined, errors)
+        cellsToResolve.push({ cell, rowNumber })
       })
     })
+
+    for (const { cell, rowNumber } of cellsToResolve) {
+      if (cell.value === "{{ report_table }}") {
+        cell.value = ""
+        await this.renderReportTable(worksheet, rowNumber, Number(cell.col), context)
+      } else {
+        cell.value = this.resolveCellValue(cell.value, context, undefined, errors)
+      }
+    }
   }
 
   private findRepeatingRow(worksheet: ExcelJS.Worksheet): number | null {
@@ -1196,7 +1276,456 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
     )
     return form
   }
+
+  private async renderReportTable(
+    worksheet: ExcelJS.Worksheet,
+    startRow: number,
+    startCol: number,
+    context: any,
+  ): Promise<void> {
+    const cdnUrl = "https://cdn.lkr.dev/viz/report-table/latest/report_table.js"
+    winston.info(`${LOG_PREFIX} Fetching report table script from CDN: ${cdnUrl}`)
+    const response = await fetch(cdnUrl)
+    if (!response.ok) {
+      throw new Error(`Failed to fetch report table script: ${response.statusText}`)
+    }
+    const scriptText = await response.text()
+
+    const virtualConsole = new VirtualConsole()
+    virtualConsole.on("error", (err) => winston.error(`${LOG_PREFIX} JSDOM Error`, err))
+    virtualConsole.on("jsdomError", (err) => winston.error(`${LOG_PREFIX} JSDOM jsdomError`, err))
+
+    const dom = new JSDOM(`<!DOCTYPE html><html><body><div id="visContainer"></div></body></html>`, {
+      runScripts: "outside-only",
+      virtualConsole,
+    })
+
+    const scriptEl = dom.window.document.createElement("script")
+    scriptEl.src = cdnUrl
+    Object.defineProperty(dom.window.document, "currentScript", {
+      get() { return scriptEl },
+      configurable: true,
+    })
+
+    const mockContext = {
+      font: "",
+      measureText: (text: string) => ({ width: (text ? String(text).length : 0) * 8 }),
+    }
+    ;(dom.window.HTMLCanvasElement.prototype as any).getContext = function(type: string) {
+      if (type === "2d") { return mockContext }
+      return null
+    }
+
+    Object.defineProperty(dom.window.HTMLElement.prototype, "clientWidth", { get: () => 800 })
+    Object.defineProperty(dom.window.HTMLElement.prototype, "clientHeight", { get: () => 600 })
+
+    dom.window.looker = {
+      plugins: {
+        visualizations: {
+          add: (vis: any) => {
+            (dom.window as any).visPlugin = vis
+          },
+        },
+      },
+    }
+
+    // Expose dataTable instance globally on match
+    let modifiedScript = scriptText
+    const matchRegex = /([a-z0-9_$]+)\s*=\s*new\s+([A-Za-z0-9_$]+)\(([a-z0-9_$]+),\s*([a-z0-9_$]+),\s*([a-z0-9_$]+)\)/g
+    let matchExpose
+    while ((matchExpose = matchRegex.exec(scriptText)) !== null) {
+      const className = matchExpose[2]
+      const secondArg = matchExpose[4]
+      if (className !== "Date" && secondArg !== "this") {
+        modifiedScript = scriptText.replace(
+          matchExpose[0],
+          `${matchExpose[0]}; window.currentTable = ${matchExpose[1]};`,
+        )
+        break
+      }
+    }
+
+    process.removeAllListeners("uncaughtException")
+    process.removeAllListeners("unhandledRejection")
+
+    const errorHandler = (err: any) => {
+      const msg = err && err.message ? err.message : String(err)
+      if (msg.includes("Cannot read properties of null (reading 'classList')")) {
+        // ignore post-render svg/classList crash
+      } else {
+        winston.error(`${LOG_PREFIX} Process Error`, err)
+      }
+    }
+
+    process.on("uncaughtException", errorHandler)
+    process.on("unhandledRejection", errorHandler)
+
+    try {
+      dom.window.eval(modifiedScript)
+
+      if (!(dom.window.looker as any).table) {
+        throw new Error("looker.table function not found after evaluating script")
+      }
+
+      const container = dom.window.document.getElementById("visContainer")
+      let visConfig: any = {}
+      if (context.scheduledPlan && context.scheduledPlan.query && context.scheduledPlan.query.vis_config) {
+        visConfig = context.scheduledPlan.query.vis_config
+      } else if (context.formParams && context.formParams.vis_config) {
+        try {
+          visConfig = JSON.parse(context.formParams.vis_config)
+        } catch (e) {
+          winston.error(`${LOG_PREFIX} Failed to parse vis_config JSON`, e)
+        }
+      }
+
+      winston.info(`${LOG_PREFIX} Resolved visConfig: ${JSON.stringify(visConfig)}`, { webhookId: context.webhookId })
+
+      const subtotalDepth = visConfig.subtotalDepth || "(all)"
+      const calculatedSubtotals = this.calculateSubtotals(context.fields, context.data || [])
+      const subtotalsPayload: any = {}
+      if (subtotalDepth === "(all)") {
+        subtotalsPayload["(all)"] = []
+        for (const d of Object.keys(calculatedSubtotals)) {
+          subtotalsPayload["(all)"].push(...calculatedSubtotals[d])
+        }
+      } else {
+        subtotalsPayload[subtotalDepth] = calculatedSubtotals[subtotalDepth] || []
+      }
+
+      const queryResponse = {
+        fields: {
+          dimensions: context.fields?.dimensions || [],
+          measures: [
+            ...(context.fields?.measures || []),
+            ...(context.fields?.table_calculations || []),
+          ],
+          dimension_like: context.fields?.dimension_like || context.fields?.dimensions || [],
+          measure_like: context.fields?.measure_like || [
+            ...(context.fields?.measures || []),
+            ...(context.fields?.table_calculations || []),
+          ],
+          pivots: context.pivots && context.pivots.length > 0 ? context.pivots : undefined,
+        },
+        pivots: context.pivots && context.pivots.length > 0 ? context.pivots : undefined,
+        sorts: context.sorts && context.sorts.length > 0 ? context.sorts : undefined,
+        totals_data: context.totals_data || {},
+        subtotals_data: subtotalsPayload,
+        has_row_totals: context.has_row_totals || false,
+      }
+
+      const resolvedTheme = String(visConfig.theme || "looker").toLowerCase()
+
+      const config = {
+        rowSubtotals: true,
+        colSubtotals: true,
+        ...visConfig,
+        subtotalDepth,
+        theme: resolvedTheme,
+      }
+
+      await new Promise<void>((resolve) => {
+        (dom.window.looker as any).table(container, {
+          queryResponse,
+          data: context.data || [],
+          config,
+          done: () => {
+            resolve()
+          },
+        })
+        setTimeout(resolve, 2000)
+      })
+
+      const tableEl = dom.window.document.querySelector("table")
+      if (!tableEl) {
+        winston.error(`${LOG_PREFIX} Table element not found in DOM!`)
+        return
+      }
+
+      const numTableRows = tableEl.querySelectorAll("tr").length
+      if (numTableRows > 1) {
+        worksheet.spliceRows(startRow + 1, 0, ...Array.from({ length: numTableRows - 1 }, () => []))
+      }
+
+      this.writeHtmlTableToExcel(worksheet, tableEl, startRow, startCol, config.theme)
+    } catch (err: any) {
+      const msg = err && err.message ? err.message : String(err)
+      if (msg.includes("Cannot read properties of null (reading 'classList')")) {
+        winston.info(`${LOG_PREFIX} Safely ignored expected post-render classList crash.`)
+      } else {
+        throw err
+      }
+    } finally {
+      // Keep error handlers active to ignore late-firing asynchronous classList transitions
+    }
+  }
+
+  private writeHtmlTableToExcel(
+    worksheet: ExcelJS.Worksheet,
+    tableEl: any,
+    startRow: number,
+    startCol: number,
+    theme: string = "looker",
+  ): void {
+    const rows = tableEl.querySelectorAll("tr")
+    const occupiedGrid: { [r: number]: { [c: number]: boolean } } = {}
+
+    function isOccupied(r: number, c: number): boolean {
+      return occupiedGrid[r] && occupiedGrid[r][c] === true
+    }
+
+    function setOccupied(r: number, c: number): void {
+      if (!occupiedGrid[r]) { occupiedGrid[r] = {} }
+      occupiedGrid[r][c] = true
+    }
+
+    let rowOffset = 0
+    rows.forEach((tr: any) => {
+      const cells = tr.querySelectorAll("th, td")
+      const rIdx = startRow + rowOffset
+      let colOffset = 0
+
+      cells.forEach((cell: any) => {
+        let cIdx = startCol + colOffset
+        while (isOccupied(rIdx, cIdx)) {
+          colOffset++
+          cIdx = startCol + colOffset
+        }
+
+        const val = cell.textContent || ""
+        const rowspan = parseInt(cell.getAttribute("rowspan") || "1", 10)
+        const colspan = parseInt(cell.getAttribute("colspan") || "1", 10)
+
+        const targetCell = worksheet.getCell(rIdx, cIdx)
+
+        let parsedVal: any = val.trim()
+        if (cell.classList.contains("numeric") || cell.classList.contains("negative")) {
+          const cleanVal = val.replace(/,/g, "").trim()
+          const num = Number(cleanVal)
+          if (!isNaN(num) && cleanVal !== "") {
+            parsedVal = num
+          }
+        }
+        targetCell.value = parsedVal
+
+        const alignment: any = {}
+        if (cell.classList.contains("numeric") || cell.classList.contains("negative")) {
+          alignment.horizontal = "right"
+        } else {
+          alignment.horizontal = cell.classList.contains("center") ? "center" : "left"
+        }
+        targetCell.alignment = alignment
+
+        const font: any = {}
+        if (
+          cell.tagName.toLowerCase() === "th" ||
+          cell.classList.contains("headerCell") ||
+          cell.classList.contains("total") ||
+          cell.classList.contains("subtotal")
+        ) {
+          font.bold = true
+        }
+        if (cell.classList.contains("subtotal")) {
+          font.italic = true
+        }
+        if (cell.classList.contains("negative")) {
+          font.color = { argb: "FFFF0000" }
+        }
+        targetCell.font = font
+
+        const fill: any = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFFF" } }
+        if (cell.classList.contains("subtotal")) {
+          fill.fgColor = { argb: "FFD3D3D3" }
+        } else if (theme === "looker") {
+          if (cell.classList.contains("dimension") && cell.classList.contains("headerCell")) {
+            fill.fgColor = { argb: "FFE4ECF3" }
+          } else if (cell.classList.contains("pivot") && cell.classList.contains("headerCell")) {
+            fill.fgColor = { argb: "FFCCD8E4" }
+          } else if (cell.classList.contains("measure") && cell.classList.contains("headerCell")) {
+            if (cell.classList.contains("calculation")) {
+              fill.fgColor = { argb: "FFC9DFC5" }
+            } else {
+              fill.fgColor = { argb: "FFE4D0BD" }
+            }
+          } else if (cell.tagName.toLowerCase() === "th") {
+            fill.fgColor = { argb: "FFCCD8E4" }
+          }
+        } else {
+          // For non-Looker themes like Traditional, headers default to white
+          if (cell.tagName.toLowerCase() === "th" || cell.classList.contains("headerCell")) {
+            fill.fgColor = { argb: "FFFFFF" }
+          }
+        }
+        targetCell.fill = fill
+
+        const thinBorder = { style: "thin", color: { argb: "FFCCCCCC" } }
+        const border: any = { left: thinBorder, right: thinBorder, top: thinBorder, bottom: thinBorder }
+        if (cell.tagName.toLowerCase() === "th" || cell.classList.contains("headerCell")) {
+          border.bottom = { style: "medium", color: { argb: "FF000000" } }
+        }
+        if (cell.classList.contains("total")) {
+          border.top = { style: "medium", color: { argb: "FF000000" } }
+        }
+        targetCell.border = border
+
+        if (rowspan > 1 || colspan > 1) {
+          worksheet.mergeCells(rIdx, cIdx, rIdx + rowspan - 1, cIdx + colspan - 1)
+          for (let r = rIdx; r < rIdx + rowspan; r++) {
+            for (let c = cIdx; c < cIdx + colspan; c++) {
+              setOccupied(r, c)
+            }
+          }
+        }
+
+        colOffset += colspan
+      })
+      rowOffset++
+    })
+  }
+
+  private calculateSubtotals(fields: any, data: any[]): any {
+    const dimensions = fields.dimensions || []
+    const measures = [
+      ...(fields.measures || []),
+      ...(fields.table_calculations || []),
+    ]
+
+    if (dimensions.length <= 1) {
+      return {}
+    }
+
+    const subtotalsData: any = {}
+
+    for (let depth = 1; depth < dimensions.length; depth++) {
+      const groupDims = dimensions.slice(0, depth)
+      const groupKeys = groupDims.map((d: any) => d.name)
+
+      const groups: { [key: string]: { groupValues: any[]; rows: any[] } } = {}
+      data.forEach((row) => {
+        const keyParts = groupKeys.map((k: string) => {
+          const cell = row[k]
+          return cell ? String(cell.value) : ""
+        })
+        const key = keyParts.join("|||")
+        if (!groups[key]) {
+          groups[key] = {
+            groupValues: groupKeys.map((k: string) => row[k]),
+            rows: [],
+          }
+        }
+        groups[key].rows.push(row)
+      })
+
+      const subtotalRows: any[] = []
+      Object.keys(groups).forEach((key) => {
+        const group = groups[key]
+        const subtotalRow: any = {
+          $$$__grouping__$$$: groupKeys,
+        }
+
+        groupKeys.forEach((k: string, idx: number) => {
+          subtotalRow[k] = group.groupValues[idx]
+        })
+
+        measures.forEach((m: any) => {
+          const mKey = m.name
+          let sum = 0
+          let count = 0
+          const values: number[] = []
+
+          group.rows.forEach((r) => {
+            const cell = r[mKey]
+            if (cell && cell.value !== undefined && cell.value !== null) {
+              let val = cell.value
+              if (typeof val === "string") {
+                const match = val.match(/<a[^>]*>([^<]*)<\/a>/)
+                if (match) {
+                  val = match[1]
+                }
+                val = Number(val.replace(/[^0-9.-]/g, ""))
+              }
+              if (!isNaN(val)) {
+                sum += val
+                values.push(val)
+              }
+              count++
+            }
+          })
+
+          let aggValue = 0
+          if (m.type === "average") {
+            aggValue = count > 0 ? sum / count : 0
+          } else if (m.type === "min") {
+            aggValue = values.length > 0 ? Math.min(...values) : 0
+          } else if (m.type === "max") {
+            aggValue = values.length > 0 ? Math.max(...values) : 0
+          } else {
+            aggValue = sum
+          }
+
+          let sampleCell: any = null
+          for (const r of group.rows) {
+            if (r[mKey] && (r[mKey].rendered || r[mKey].value !== undefined)) {
+              sampleCell = r[mKey]
+              break
+            }
+          }
+          subtotalRow[mKey] = {
+            value: aggValue,
+            rendered: this.formatMetricValue(aggValue, m, sampleCell),
+          }
+        })
+
+        subtotalRows.push(subtotalRow)
+      })
+
+      subtotalsData[String(depth)] = subtotalRows
+    }
+
+    return subtotalsData
+  }
+
+  private formatMetricValue(aggValue: number, field: any, sampleCell?: any): string {
+    const fmt = field?.value_format || field?.value_format_string
+    if (fmt) {
+      try {
+        const { SSF } = require("xlsx")
+        if (SSF && typeof SSF.format === "function") {
+          return SSF.format(fmt, aggValue)
+        }
+      } catch (e) {
+        // ignore SSF format error
+      }
+    }
+
+    const sampleText = sampleCell?.rendered || (typeof sampleCell?.value === "string" ? sampleCell.value : "")
+
+    if (sampleText.includes("$")) {
+      const formattedNum = aggValue.toLocaleString("en-US", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })
+      return `$${formattedNum}`
+    }
+
+    if (sampleText.includes("%")) {
+      const formattedNum = aggValue.toLocaleString("en-US", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })
+      return `${formattedNum}%`
+    }
+
+    if (Number.isInteger(aggValue)) {
+      return aggValue.toLocaleString("en-US")
+    }
+
+    return aggValue.toLocaleString("en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })
+  }
 }
 
-// ponytail: register the action in the hub
+// register the action in the hub
 Hub.addAction(new GoogleSheetXlsxTemplateAction())

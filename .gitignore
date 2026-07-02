@@ -67,4 +67,4 @@ tmp
 cloudflared
 
 # Local simulation output
-simulate/output.xlsx
+simulate/*.xlsx

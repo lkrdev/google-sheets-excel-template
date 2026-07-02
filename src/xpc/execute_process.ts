@@ -9,8 +9,16 @@ dotenv.config()
 async function execute(jsonPayload: any) {
     const req = JSON.parse(jsonPayload)
     const request = Hub.ActionRequest.fromIPC(req)
+    winston.info(`[CHILD_PROCESS] executing action ${req.actionId} for webhook ${request.webhookId}`)
     const action = await Hub.findAction(req.actionId, {lookerVersion: req.lookerVersion})
-    return action.execute(request)
+    try {
+        const res = await action.execute(request)
+        winston.info(`[CHILD_PROCESS] execution success: ${JSON.stringify(res)}`)
+        return res
+    } catch (err: any) {
+        winston.error(`[CHILD_PROCESS] execution failed: ${err}`)
+        throw err
+    }
 }
 
 process.on("message", (req) => {

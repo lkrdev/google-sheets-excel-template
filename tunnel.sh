@@ -4,7 +4,7 @@
 # but allow the tunnel loop to manage its own lifecycle.
 set -e
 
-# ponytail: simple binary download to current directory instead of managing apt/yum/dnf/brew or sudo permissions.
+# simple binary download to current directory instead of managing apt/yum/dnf/brew or sudo permissions.
 CLOUDFLARED_BIN="cloudflared"
 
 # Check if cloudflared is available in PATH

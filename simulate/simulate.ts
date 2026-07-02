@@ -5,8 +5,8 @@ import * as oboe from "oboe";
 import { GoogleSheetXlsxTemplateAction } from "../src/actions/google_sheet_xlsx_template/google_sheet_xlsx_template";
 
 async function runSimulation() {
-  const templatePath = path.resolve(__dirname, "./template-example.xlsx");
-  const jsonPath = path.resolve(__dirname, "./example-json_detail_lite_stream2.json");
+  const templatePath = path.resolve(__dirname, "./template-report-table.xlsx");
+  const jsonPath = path.resolve(__dirname, "../example-json_detail_lite_stream.json");
   const outputPath = path.resolve(__dirname, "./output.xlsx");
 
   console.log(`🚀 Starting local template simulation...`);
@@ -16,6 +16,11 @@ async function runSimulation() {
   // 1. Harvest JSON stream data
   let fields: any = null;
   let appliedFilters: any = null;
+  let pivots: any[] = [];
+  let sorts: any[] = [];
+  let totals_data: any = null;
+  let subtotals_data: any = null;
+  let has_row_totals = false;
   const data: any[] = [];
 
   const downloadStream = fs.createReadStream(jsonPath);
@@ -28,6 +33,26 @@ async function runSimulation() {
         },
         "!.applied_filters": (filters: any) => {
           appliedFilters = filters;
+          return oboe.drop;
+        },
+        "!.pivots": (p: any) => {
+          pivots = p;
+          return oboe.drop;
+        },
+        "!.sorts": (s: any) => {
+          sorts = s;
+          return oboe.drop;
+        },
+        "!.totals_data": (t: any) => {
+          totals_data = t;
+          return oboe.drop;
+        },
+        "!.subtotals_data": (sub: any) => {
+          subtotals_data = sub;
+          return oboe.drop;
+        },
+        "!.has_row_totals": (hrt: boolean) => {
+          has_row_totals = hrt;
           return oboe.drop;
         },
         "!.data.*": (row: any) => {
@@ -52,6 +77,7 @@ async function runSimulation() {
     params: {},
     formParams: {
       filename: "Simulation Report",
+      vis_config: '{"theme":"traditional"}',
     },
     scheduledPlan: {
       title: "Simulation Test Plan",
@@ -60,6 +86,11 @@ async function runSimulation() {
     },
     fields,
     appliedFilters,
+    pivots,
+    sorts,
+    totals_data,
+    subtotals_data,
+    has_row_totals,
     data,
     _built_in: {
       run_at: new Date().toISOString(),
@@ -78,7 +109,7 @@ async function runSimulation() {
 
   console.log("⚙️ Populating Excel template with harvested data...");
   // Bypass private modifier via cast to 'any'
-  (action as any).populateTemplate(workbook, context, errors);
+  await (action as any).populateTemplate(workbook, context, errors);
 
   if (errors.size > 0) {
     console.warn(`⚠️ Encountered ${errors.size} unresolved mustaches. Adding _errors worksheet...`);
