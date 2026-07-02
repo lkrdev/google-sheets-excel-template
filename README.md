@@ -30,9 +30,11 @@ Design templates using these placeholder patterns in any cell:
 | `{{ _built_in.description }}` | Scheduled plan description | `Quarterly update` |
 | `{{ _filters.view_name.field_name }}` | Applied query filter value | `California` |
 | `{{ fields.view_name.field_name.label }}` | Field label string | `State` |
-| `{{ data[index].view_name.field_name }}` | Zero-indexed row value | `{{ data[0].products.brand }}` |
+| `{{ fields._columns[index].label }}` | Label of the N-th column in the query schema (0-indexed) | `{{ fields._columns[0].label }}` |
+| `{{ data[index].view_name.field_name }}` | Zero-indexed explicit row lookup | `{{ data[0].products.brand }}` |
 | `{{ data.view_name.field_name }}` | Field value for current row in repeating data sections | `{{ data.users.state }}` |
-| `{{ data._columns[index] }}` | N-th column value in current row | `{{ data._columns[0] }}` |
+| `{{ data._columns[index] }}` | N-th column value in current row (0-indexed) | `{{ data._columns[0] }}` |
+| `{{ report_table }}` | Embeds the Report Table visualization into the worksheet starting at that cell | `{{ report_table }}` |
 
 The repeating row section is detected by matching cell patterns like `{{ data.users.state }}`. The row expands downwards for each data record, and Excel formulas referencing those ranges update automatically.
 
