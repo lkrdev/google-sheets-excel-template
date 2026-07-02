@@ -1656,9 +1656,9 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
           if (m.type === "average") {
             aggValue = count > 0 ? sum / count : 0
           } else if (m.type === "min") {
-            aggValue = values.length > 0 ? Math.min(...values) : 0
+            aggValue = values.length > 0 ? values.reduce((a, b) => Math.min(a, b)) : 0
           } else if (m.type === "max") {
-            aggValue = values.length > 0 ? Math.max(...values) : 0
+            aggValue = values.length > 0 ? values.reduce((a, b) => Math.max(a, b)) : 0
           } else {
             aggValue = sum
           }
