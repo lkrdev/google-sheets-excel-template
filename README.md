@@ -13,7 +13,7 @@ When Looker sends a query payload via webhook, this service:
 2. **Downloads the Excel Template**: Retrieves a selected `.xlsx` template file from a specified folder in Google Drive.
 3. **Populates the Template or Report Table Visualization**:
    - **Template Mode**: Uses [ExcelJS](https://github.com/exceljs/exceljs) to parse handlebars placeholders (`{{ data.field_name }}`, `{{ _built_in.run_at }}`, etc.), automatically duplicating repeating data rows while preserving styles, formulas, and headers.
-   - **Report Table Visualization Mode**: Renders Looker Report Table visualizations using JSDOM, including custom themes (`Looker`, `Traditional`), multi-level row subtotals calculation, and formatted metric values (`$`, `%`, thousand separators).
+   - **Report Table Visualization Mode**: Renders Looker [Report Table visualizations](https://www.lkr.dev/docs/visualizations/viz-report-table-marketplace2/) using JSDOM, including custom themes (`Looker`, `Traditional`), multi-level row subtotals calculation, and formatted metric values (`$`, `%`, thousand separators).
 4. **OAuth State Fallback**: Caches OAuth credentials to `/tmp/last_state_json.json` on UI runs to seamlessly support automated/SDK `scheduled_plan_run_once` background executions.
 5. **Uploads the Populated Excel File**: Saves the final populated spreadsheet back to your Google Drive (or Shared Drive) in the chosen destination folder.
 
