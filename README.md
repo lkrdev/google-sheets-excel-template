@@ -38,6 +38,9 @@ Design templates using these placeholder patterns in any cell:
 
 ## Deployment
 
+[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://ssh.cloud.google.com/cloudshell/editor?shellonly=true&cloudshell_git_repo=https://github.com/lkrdev/google-sheets-excel-template)
+
+
 Deploy directly to Google Cloud Run using the deployment script:
 
 ```bash
