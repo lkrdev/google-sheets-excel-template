@@ -104,9 +104,9 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
         let appliedFilters: any = null
         let pivots: any[] = []
         let sorts: any[] = []
-        let totals_data: any = null
-        let subtotals_data: any = null
-        let has_row_totals = false
+        let totalsData: any = null
+        let subtotalsData: any = null
+        let hasRowTotals = false
         const data: any[] = []
 
         await request.stream(async (downloadStream: Readable) => {
@@ -130,15 +130,15 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
                   return oboe.drop
                 },
                 "!.totals_data": (t: any) => {
-                  totals_data = t
+                  totalsData = t
                   return oboe.drop
                 },
                 "!.subtotals_data": (sub: any) => {
-                  subtotals_data = sub
+                  subtotalsData = sub
                   return oboe.drop
                 },
                 "!.has_row_totals": (hrt: boolean) => {
-                  has_row_totals = hrt
+                  hasRowTotals = hrt
                   return oboe.drop
                 },
                 "!.data.*": (row: any) => {
@@ -168,9 +168,9 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
           appliedFilters,
           pivots,
           sorts,
-          totals_data,
-          subtotals_data,
-          has_row_totals,
+          totals_data: totalsData,
+          subtotals_data: subtotalsData,
+          has_row_totals: hasRowTotals,
           data,
           _built_in: {
             run_at: new Date().toISOString(),
@@ -180,7 +180,6 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
         }
 
         try {
-          const fs = require("fs")
           fs.writeFileSync(
             "/tmp/last_execute_payload.json",
             JSON.stringify({
@@ -188,14 +187,14 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
               appliedFilters,
               pivots,
               sorts,
-              totals_data,
-              subtotals_data,
-              has_row_totals,
+              totals_data: totalsData,
+              subtotals_data: subtotalsData,
+              has_row_totals: hasRowTotals,
               data,
               vis_config: request.scheduledPlan?.query?.vis_config
                 ? request.scheduledPlan.query.vis_config
                 : (request.formParams.vis_config ? JSON.parse(request.formParams.vis_config) : {}),
-            }, null, 2)
+            }, null, 2),
           )
         } catch (e) {
           winston.error("Failed to dump debug payload", e)
@@ -1311,7 +1310,8 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
       font: "",
       measureText: (text: string) => ({ width: (text ? String(text).length : 0) * 8 }),
     }
-    ;(dom.window.HTMLCanvasElement.prototype as any).getContext = function(type: string) {
+    const canvasProto = dom.window.HTMLCanvasElement.prototype as any
+    canvasProto.getContext = (type: string) => {
       if (type === "2d") { return mockContext }
       return null
     }
@@ -1332,8 +1332,8 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
     // Expose dataTable instance globally on match
     let modifiedScript = scriptText
     const matchRegex = /([a-z0-9_$]+)\s*=\s*new\s+([A-Za-z0-9_$]+)\(([a-z0-9_$]+),\s*([a-z0-9_$]+),\s*([a-z0-9_$]+)\)/g
-    let matchExpose
-    while ((matchExpose = matchRegex.exec(scriptText)) !== null) {
+    let matchExpose = matchRegex.exec(scriptText)
+    while (matchExpose !== null) {
       const className = matchExpose[2]
       const secondArg = matchExpose[4]
       if (className !== "Date" && secondArg !== "this") {
@@ -1343,6 +1343,7 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
         )
         break
       }
+      matchExpose = matchRegex.exec(scriptText)
     }
 
     process.removeAllListeners("uncaughtException")
@@ -1363,7 +1364,8 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
     try {
       dom.window.eval(modifiedScript)
 
-      if (!(dom.window.looker as any).table) {
+      const winObj = dom.window as any
+      if (!winObj.looker || !winObj.looker.table) {
         throw new Error("looker.table function not found after evaluating script")
       }
 
@@ -1381,8 +1383,8 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
 
       winston.info(`${LOG_PREFIX} Resolved visConfig: ${JSON.stringify(visConfig)}`, { webhookId: context.webhookId })
 
-      const subtotalDepth = visConfig.subtotalDepth || "(all)"
-      const calculatedSubtotals = this.calculateSubtotals(context.fields, context.data || [])
+      const subtotalDepth = visConfig.subtotalDepth ? String(visConfig.subtotalDepth) : "(all)"
+      const calculatedSubtotals = this.calculateSubtotals(context.fields, context.data ? context.data : [])
       const subtotalsPayload: any = {}
       if (subtotalDepth === "(all)") {
         subtotalsPayload["(all)"] = []
@@ -1390,31 +1392,33 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
           subtotalsPayload["(all)"].push(...calculatedSubtotals[d])
         }
       } else {
-        subtotalsPayload[subtotalDepth] = calculatedSubtotals[subtotalDepth] || []
+        subtotalsPayload[subtotalDepth] = calculatedSubtotals[subtotalDepth] ? calculatedSubtotals[subtotalDepth] : []
       }
+
+      const dimensions = context.fields && context.fields.dimensions ? context.fields.dimensions : []
+      const measures = context.fields && context.fields.measures ? context.fields.measures : []
+      const tableCalcs = context.fields && context.fields.table_calculations ? context.fields.table_calculations : []
+      const dimensionLike = context.fields && context.fields.dimension_like ? context.fields.dimension_like : dimensions
+      const measureLike = context.fields && context.fields.measure_like
+        ? context.fields.measure_like
+        : [...measures, ...tableCalcs]
 
       const queryResponse = {
         fields: {
-          dimensions: context.fields?.dimensions || [],
-          measures: [
-            ...(context.fields?.measures || []),
-            ...(context.fields?.table_calculations || []),
-          ],
-          dimension_like: context.fields?.dimension_like || context.fields?.dimensions || [],
-          measure_like: context.fields?.measure_like || [
-            ...(context.fields?.measures || []),
-            ...(context.fields?.table_calculations || []),
-          ],
-          pivots: context.pivots && context.pivots.length > 0 ? context.pivots : undefined,
+          dimensions,
+          measures: [...measures, ...tableCalcs],
+          dimension_like: dimensionLike,
+          measure_like: measureLike,
+          pivots: context.pivots && (context.pivots as any[]).length > 0 ? context.pivots : undefined,
         },
-        pivots: context.pivots && context.pivots.length > 0 ? context.pivots : undefined,
-        sorts: context.sorts && context.sorts.length > 0 ? context.sorts : undefined,
-        totals_data: context.totals_data || {},
+        pivots: context.pivots && (context.pivots as any[]).length > 0 ? context.pivots : undefined,
+        sorts: context.sorts && (context.sorts as any[]).length > 0 ? context.sorts : undefined,
+        totals_data: context.totals_data ? context.totals_data : {},
         subtotals_data: subtotalsPayload,
-        has_row_totals: context.has_row_totals || false,
+        has_row_totals: Boolean(context.has_row_totals),
       }
 
-      const resolvedTheme = String(visConfig.theme || "looker").toLowerCase()
+      const resolvedTheme = String(visConfig.theme ? visConfig.theme : "looker").toLowerCase()
 
       const config = {
         rowSubtotals: true,
@@ -1425,9 +1429,9 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
       }
 
       await new Promise<void>((resolve) => {
-        (dom.window.looker as any).table(container, {
+        winObj.looker.table(container, {
           queryResponse,
-          data: context.data || [],
+          data: context.data ? context.data : [],
           config,
           done: () => {
             resolve()
@@ -1465,17 +1469,18 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
     tableEl: any,
     startRow: number,
     startCol: number,
-    theme: string = "looker",
+    theme = "looker",
   ): void {
     const rows = tableEl.querySelectorAll("tr")
     const occupiedGrid: { [r: number]: { [c: number]: boolean } } = {}
 
     function isOccupied(r: number, c: number): boolean {
-      return occupiedGrid[r] && occupiedGrid[r][c] === true
+      const rowGrid = occupiedGrid[r]
+      return Boolean(rowGrid) && rowGrid[c] === true
     }
 
     function setOccupied(r: number, c: number): void {
-      if (!occupiedGrid[r]) { occupiedGrid[r] = {} }
+      if (occupiedGrid[r] === undefined) { occupiedGrid[r] = {} }
       occupiedGrid[r][c] = true
     }
 
@@ -1492,9 +1497,11 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
           cIdx = startCol + colOffset
         }
 
-        const val = cell.textContent || ""
-        const rowspan = parseInt(cell.getAttribute("rowspan") || "1", 10)
-        const colspan = parseInt(cell.getAttribute("colspan") || "1", 10)
+        const val = String(cell.textContent ? cell.textContent : "")
+        const rowspanAttr = cell.getAttribute("rowspan")
+        const colspanAttr = cell.getAttribute("colspan")
+        const rowspan = parseInt(rowspanAttr ? String(rowspanAttr) : "1", 10)
+        const colspan = parseInt(colspanAttr ? String(colspanAttr) : "1", 10)
 
         const targetCell = worksheet.getCell(rIdx, cIdx)
 
@@ -1584,10 +1591,10 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
   }
 
   private calculateSubtotals(fields: any, data: any[]): any {
-    const dimensions = fields.dimensions || []
+    const dimensions = fields && fields.dimensions ? fields.dimensions : []
     const measures = [
-      ...(fields.measures || []),
-      ...(fields.table_calculations || []),
+      ...(fields && fields.measures ? fields.measures : []),
+      ...(fields && fields.table_calculations ? fields.table_calculations : []),
     ]
 
     if (dimensions.length <= 1) {
@@ -1607,7 +1614,7 @@ export class GoogleSheetXlsxTemplateAction extends Hub.OAuthActionV2 {
           return cell ? String(cell.value) : ""
         })
         const key = keyParts.join("|||")
-        if (!groups[key]) {
+        if (!Boolean(groups[key])) {
           groups[key] = {
             groupValues: groupKeys.map((k: string) => row[k]),
             rows: [],
