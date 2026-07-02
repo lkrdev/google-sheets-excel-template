@@ -11,13 +11,11 @@ This action allows Looker users to generate beautifully formatted Excel (`.xlsx`
 When Looker sends a query payload via webhook, this service:
 1. **Validates OAuth2 User Credentials**: Authenticates the user against Google Drive APIs (requiring `drive` and `userinfo.email` scopes), enforcing optional domain allowlists (`domain_allowlist`).
 2. **Downloads the Excel Template**: Retrieves a selected `.xlsx` template file from a specified folder in Google Drive.
-3. **Populates the Template**:
-   - Uses [ExcelJS](https://github.com/exceljs/exceljs) to parse the template.
-   - Detects the **repeating data row** automatically by scanning for cells containing `{{ data.field_name }}` or `{{ data._columns[i] }}`.
-   - Automatically duplicates and shifts rows to insert the entire Looker query result table while preserving cell styles, heights, and formulas.
-   - Resolves all other single-value placeholders in the sheet (e.g., in headers, titles, or footers) using query metadata, execution details, or filters.
-   - If any placeholders cannot be resolved, it appends a list of errors to a special `_errors` sheet in the workbook.
-4. **Uploads the Populated Excel File**: Saves the final populated spreadsheet back to your Google Drive (or Shared Drive) in the chosen destination folder.
+3. **Populates the Template or Report Table Visualization**:
+   - **Template Mode**: Uses [ExcelJS](https://github.com/exceljs/exceljs) to parse handlebars placeholders (`{{ data.field_name }}`, `{{ _built_in.run_at }}`, etc.), automatically duplicating repeating data rows while preserving styles, formulas, and headers.
+   - **Report Table Visualization Mode**: Renders Looker Report Table visualizations using JSDOM, including custom themes (`Looker`, `Traditional`), multi-level row subtotals calculation, and formatted metric values (`$`, `%`, thousand separators).
+4. **OAuth State Fallback**: Caches OAuth credentials to `/tmp/last_state_json.json` on UI runs to seamlessly support automated/SDK `scheduled_plan_run_once` background executions.
+5. **Uploads the Populated Excel File**: Saves the final populated spreadsheet back to your Google Drive (or Shared Drive) in the chosen destination folder.
 
 ---
 
@@ -254,6 +252,9 @@ yarn start
 
 # Run development server with hot-reloading
 yarn dev
+
+# Run development server with Cloudflare Tunnel (dev-tunnel)
+make dev-tunnel
 ```
 
 ---
