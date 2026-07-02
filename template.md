@@ -1,47 +1,41 @@
-# Excel Template Action Implementation Report
+# Excel Template Action Specification & Results
 
-We have successfully implemented the first phase of the **Excel Template Action**. The action is fully registered, compiling, linting, and passing all tests (72 passing).
+The Google Sheets Excel Template action (`google-sheet-xlsx-template`) handles template parsing, layout rendering, and streaming query results.
 
 ## 1. Action Specification
-* **Action Name:** `google-sheet-xlsx-template` (Registered in [index.ts](file:///usr/local/google/home/bryanweber/lkrdev/google-sheets-excel-template/src/actions/index.ts))
-* **Implementation File:** [google_sheet_xlsx_template.ts](file:///usr/local/google/home/bryanweber/lkrdev/google-sheets-excel-template/src/actions/google_sheet_xlsx_template/google_sheet_xlsx_template.ts)
-* **Format Supported:** `json_detail_lite_stream` (chosen for metadata, filters, and structured indexing)
-* **Download Settings:** `url` (streaming to handle large datasets efficiently)
-* **Icon:** Reused `google/docs/docs.svg` as a placeholder
+- Action name: `google-sheet-xlsx-template` (registered in [src/actions/index.ts](file:///usr/local/google/home/bryanweber/lkrdev/google-sheets-excel-template/src/actions/index.ts))
+- Core implementation: [google_sheet_xlsx_template.ts](file:///usr/local/google/home/bryanweber/lkrdev/google-sheets-excel-template/src/actions/google_sheet_xlsx_template/google_sheet_xlsx_template.ts)
+- Supported format: `json_detail_lite_stream` (streams metadata, field types, and row tuples efficiently)
+- Download mode: `url` (streams data directly for large query result sets)
 
-## 2. Template Parsing Results
-We parsed [template-example.xlsx](file:///usr/local/google/home/bryanweber/lkrdev/google-sheets-excel-template/simulate/template-example.xlsx) using `exceljs`. Here are the handlebar expressions, layout parameters, and formatting details:
+## 2. Template Parsing Test Results
+Parsed [template-example.xlsx](file:///usr/local/google/home/bryanweber/lkrdev/google-sheets-excel-template/simulate/template-example.xlsx) using `exceljs`. Mapped cells and placeholders:
 
-### Handlebars / Template Placeholders
-| Cell | Raw Template Value | Target Mapping Source | Typo Correction |
-| :--- | :--- | :--- | :--- |
-| **B4** | `{{ _built_in.run_at }}` | Query execution timestamp / local time | *None* |
-| **B5** | `{{ _built_in.title }}` | `scheduledPlan.title` | *None* |
-| **B6** | `{{ _built_in.description }}` | `scheduledPlan.description` (if available) | *None* |
-| **B7** | `{{ _filters.users.state }}` | `appliedFilters["users.state"].value` | *None* |
-| **B8** | `{{ data[0].products.brand }}` | `data[0]["products.brand"].value` | *None (Fixed)* |
-| **C10** | `{{ fields.users.state.label }}` | `fields.dimensions` or `fields.measures` label | *None* |
-| **A11** | `{{ data._columns[0] }}` | Value of the 0th column in the current row | *None (Fixed)* |
-| **B11** | `{{ data._columns[2] }}` | Value of the 2nd column in the current row | *None (Fixed)* |
-| **C11** | `{{ data.users.state }}` | `row["users.state"].value` in current row | *None* |
-| **D11** | `{{ data.order_items.count }}` | `row["order_items.count"].value` in current row | *None* |
+### Template Placeholders
+| Cell | Raw Template Value | Target Mapping Source |
+| :--- | :--- | :--- |
+| **B4** | `{{ _built_in.run_at }}` | Query execution timestamp |
+| **B5** | `{{ _built_in.title }}` | `scheduledPlan.title` |
+| **B6** | `{{ _built_in.description }}` | `scheduledPlan.description` |
+| **B7** | `{{ _filters.users.state }}` | `appliedFilters["users.state"].value` |
+| **B8** | `{{ data[0].products.brand }}` | `data[0]["products.brand"].value` |
+| **C10** | `{{ fields.users.state.label }}` | `fields.dimensions` or `fields.measures` label |
+| **A11** | `{{ data._columns[0] }}` | First column value in the current row |
+| **B11** | `{{ data._columns[2] }}` | Third column value in the current row |
+| **C11** | `{{ data.users.state }}` | `row["users.state"].value` in the current row |
+| **D11** | `{{ data.order_items.count }}` | `row["order_items.count"].value` in the current row |
 
-*Note: Row 11 acts as the repeating data row.*
+Row 11 serves as the repeating data section.
 
-### Layout, Fills, & Branding
-* **Embedded Image**: A PNG logo is anchored at cell **`A1`** (Top-Left corner) for sheet branding.
-* **Column Sizing**:
-  - Columns A, B, D, E, F: Width set to `12.63`
-  - Column C: Width set to `17.00` (wider to fit full state names without truncation)
-* **Cell Color Highlights**:
-  - 🟨 **Yellow Fill (`#FFFF00`)**: Metadata labels in `A4:A8`
-  - 🟦 **Blue Fill (`#3C78D8`)**: Table header row `A10:D10`
-  - ⬜ **Light Gray Fill (`#FFD9D9D9`)**: Repeating data row `A11:D11`
+### Layout & Styles
+- PNG logo anchored at cell **`A1`**
+- Column widths: A, B, D, E, F set to `12.63`; C set to `17.00` to prevent text clipping
+- Header fills: Yellow (`#FFFF00`) for metadata labels A4:A8, Blue (`#3C78D8`) for table headers A10:D10, Gray (`#FFD9D9D9`) for repeating row template A11:D11
 
 ---
 
-## 3. Harvested Payload Structure
-When Looker executes the action, we stream the payload and save a fully aggregated JSON file under the `payloads/` directory. Based on our unit tests and the real-world sample you provided, the saved file follows this structure:
+## 3. Webhook Payload Structure
+Payload structure stored during streaming runs:
 
 ```json
 {
@@ -57,29 +51,26 @@ When Looker executes the action, we stream the payload and save a fully aggregat
   },
   "fields": {
     "dimensions": [
-      { "name": "order_items.created_week", "label": "Order Items Created Week", ... }
+      { "name": "order_items.created_week", "label": "Order Items Created Week" }
     ],
     "measures": [
-      { "name": "order_items.total_sale_price", "label": "Order Items Total Sale Price", ... }
+      { "name": "order_items.total_sale_price", "label": "Order Items Total Sale Price" }
     ]
   },
   "appliedFilters": {
-    "products.brand": { "value": "-EMPTY", "field": { ... } },
-    "order_items.created_week": { "value": "NOT NULL", "field": { ... } }
+    "products.brand": { "value": "-EMPTY", "field": {} },
+    "order_items.created_week": { "value": "NOT NULL", "field": {} }
   },
   "data": [
     {
       "order_items.created_week": { "value": "2022-12-26" },
-      "order_items.total_sale_price": { "value": 2499.45001411438 }
-    },
-    ...
+      "order_items.total_sale_price": { "value": 2499.45 }
+    }
   ]
 }
 ```
 
-## 4. Green Test Suite Status
-We have written a comprehensive unit test suite in [test_google_sheet_xlsx_template.ts](file:///usr/local/google/home/bryanweber/lkrdev/google-sheets-excel-template/src/actions/google_sheet_xlsx_template/test_google_sheet_xlsx_template.ts) that:
-1. Mocks a streaming request to verify harvesting.
-2. Streams the real [example-json_detail_lite_stream.json](file:///usr/local/google/home/bryanweber/lkrdev/google-sheets-excel-template/example-json_detail_lite_stream.json) on disk to assert that all 183 rows, fields, filters, and values are parsed and saved with 100% correctness.
-
-All compilation, linting, and Mocha tests are now passing successfully!
+## 4. Test Verification
+Unit tests are located in [test_google_sheet_xlsx_template.ts](file:///usr/local/google/home/bryanweber/lkrdev/google-sheets-excel-template/src/actions/google_sheet_xlsx_template/test_google_sheet_xlsx_template.ts):
+1. Verifies payload stream harvesting and metadata extraction.
+2. Streams sample dataset `example-json_detail_lite_stream.json` and verifies parsing accuracy across all 183 rows.
