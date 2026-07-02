@@ -1,15 +1,15 @@
 # Excel Template Action Specification & Results
 
-The Google Sheets Excel Template action (`google-sheet-xlsx-template`) handles template parsing, layout rendering, and streaming query results.
+The Google Sheets Excel Template action handles template parsing, layout rendering, and streaming query results as .xlxs files and stores them on Google Drive.
 
 ## 1. Action Specification
-- Action name: `google-sheet-xlsx-template` (registered in [src/actions/index.ts](file:///usr/local/google/home/bryanweber/lkrdev/google-sheets-excel-template/src/actions/index.ts))
-- Core implementation: [google_sheet_xlsx_template.ts](file:///usr/local/google/home/bryanweber/lkrdev/google-sheets-excel-template/src/actions/google_sheet_xlsx_template/google_sheet_xlsx_template.ts)
+- Action name: `google-sheet-xlsx-template` (registered in [src/actions/index.ts](src/actions/index.ts))
+- Core implementation: [google_sheet_xlsx_template.ts](src/actions/google_sheet_xlsx_template/google_sheet_xlsx_template.ts)
 - Supported format: `json_detail_lite_stream` (streams metadata, field types, and row tuples efficiently)
 - Download mode: `url` (streams data directly for large query result sets)
 
 ## 2. Template Parsing Test Results
-Parsed [template-example.xlsx](file:///usr/local/google/home/bryanweber/lkrdev/google-sheets-excel-template/simulate/template-example.xlsx) using `exceljs`. Mapped cells and placeholders:
+Parsed [template-example.xlsx](simulate/template-example.xlsx) using `exceljs`. Mapped cells and placeholders:
 
 ### Template Placeholders
 | Cell | Raw Template Value | Target Mapping Source |
@@ -71,6 +71,6 @@ Payload structure stored during streaming runs:
 ```
 
 ## 4. Test Verification
-Unit tests are located in [test_google_sheet_xlsx_template.ts](file:///usr/local/google/home/bryanweber/lkrdev/google-sheets-excel-template/src/actions/google_sheet_xlsx_template/test_google_sheet_xlsx_template.ts):
+Unit tests are located in [test_google_sheet_xlsx_template.ts](src/actions/google_sheet_xlsx_template/test_google_sheet_xlsx_template.ts):
 1. Verifies payload stream harvesting and metadata extraction.
 2. Streams sample dataset `example-json_detail_lite_stream.json` and verifies parsing accuracy across all 183 rows.
