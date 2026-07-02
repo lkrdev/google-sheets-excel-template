@@ -8,7 +8,7 @@ Merges query data from Looker into pre-formatted Excel (`.xlsx`) templates store
 
 ## Why Use This Action
 
-Standard CSV or Excel exports from Looker strip out existing spreadsheet formatting, formulas, and visual layouts. This action fixes that by letting you:
+Standard CSV or Excel exports from Looker don't include custom spreadsheet formatting, formulas, or pre-designed visual layouts. This action enables you to:
 
 - Fill pre-designed `.xlsx` templates that contain company logos, custom typography, specific column widths, and color schemes.
 - Preserve live Excel formulas such as `=SUM()` or `=VLOOKUP()`. As data rows expand during exports, cell references and summary formulas adjust automatically.
