@@ -1,11 +1,11 @@
-FROM node:20.19-alpine
+FROM node:24.21-alpine
 
 RUN mkdir -p /code
 WORKDIR /code
 
 COPY . /code
 
-RUN yarn install --production && yarn cache clean
+RUN yarn install && yarn cache clean
 RUN yarn build
 
 CMD ["yarn","start"]
